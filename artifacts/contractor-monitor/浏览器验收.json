@@ -1,0 +1,112 @@
+{
+  "reports": [
+    {
+      "viewport": "1920x1080",
+      "status": "通过",
+      "overflow": false,
+      "tiles": [
+        {
+          "width": 810,
+          "height": 454,
+          "x": 276,
+          "y": 838
+        },
+        {
+          "width": 810,
+          "height": 454,
+          "x": 1096,
+          "y": 838
+        }
+      ]
+    },
+    {
+      "viewport": "1366x768",
+      "status": "通过",
+      "overflow": false,
+      "tiles": [
+        {
+          "width": 533,
+          "height": 315.5,
+          "x": 276,
+          "y": 775
+        },
+        {
+          "width": 533,
+          "height": 315.5,
+          "x": 819,
+          "y": 775
+        }
+      ]
+    },
+    {
+      "viewport": "1024x768",
+      "status": "通过",
+      "overflow": false,
+      "tiles": [
+        {
+          "width": 362,
+          "height": 230,
+          "x": 276,
+          "y": 544
+        },
+        {
+          "width": 362,
+          "height": 230,
+          "x": 648,
+          "y": 544
+        }
+      ]
+    },
+    {
+      "viewport": "768x1024",
+      "status": "通过",
+      "overflow": false,
+      "tiles": [
+        {
+          "width": 365,
+          "height": 231.5,
+          "x": 14,
+          "y": 958
+        },
+        {
+          "width": 365,
+          "height": 231.5,
+          "x": 389,
+          "y": 958
+        }
+      ]
+    },
+    {
+      "viewport": "390x844",
+      "status": "通过",
+      "overflow": false,
+      "tiles": [
+        {
+          "width": 362,
+          "height": 206,
+          "x": 14,
+          "y": 1506
+        },
+        {
+          "width": 362,
+          "height": 230,
+          "x": 14,
+          "y": 1722
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "checks": [
+    "默认监控入口",
+    "机械臂四路视频",
+    "机械臂内嵌数字孪生",
+    "四屏点击",
+    "订单清单往返",
+    "订单切换",
+    "预算项目关联",
+    "记录保存恢复",
+    "记录按订单隔离",
+    "客户入口回归"
+  ]
+}
