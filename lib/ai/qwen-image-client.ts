@@ -5,7 +5,7 @@ export type QwenImageRequest={images?:string[];prompt:string;promptExtend?:boole
 
 export async function qwenGenerateImage(input:QwenImageRequest){
   const c=getAiConfig(),model=input.model||c.imageModel
-  if(!c.apiKey)throw new QwenRequestError({message:'QWEN_API_KEY is not configured',stage:'image',model})
+  if(c.mode!=='local'&&!c.apiKey)throw new QwenRequestError({message:'QWEN_API_KEY is not configured',stage:'image',model})
   const images=(input.images||[]).slice(0,3)
   const inputBytes=images.reduce((total,image)=>{
     if(!image.startsWith('data:'))return total
@@ -17,6 +17,17 @@ export async function qwenGenerateImage(input:QwenImageRequest){
   const content=[...images.map(image=>({image})),{text:input.prompt}]
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),c.imageTimeoutMs)
   try{
+    if(c.mode==='local'){
+      const res=await fetch(`${c.nativeBaseUrl}/v1/images/generations`,{
+        method:'POST',signal:controller.signal,headers:{'content-type':'application/json'},
+        body:JSON.stringify({model,prompt:input.prompt,images,size:input.size,negativePrompt:input.negativePrompt,seed:input.seed,steps:40,guidanceScale:1})
+      })
+      const responseText=await res.text();let data:any={};try{data=JSON.parse(responseText)}catch{}
+      if(!res.ok)throw new QwenRequestError({message:`Local Qwen Image failed: HTTP ${res.status} ${responseText.slice(0,1200)}`,status:res.status,stage:'image',model})
+      const url=data?.url||data?.data?.[0]?.url
+      if(!url)throw new QwenRequestError({message:'Local Qwen Image response did not include an image URL',stage:'image',model})
+      return{url,requestId:data?.requestId||'',usage:data?.usage||null,model,ephemeral:false}
+    }
     const res=await fetch(`${c.nativeBaseUrl}/services/aigc/multimodal-generation/generation`,{
       method:'POST',signal:controller.signal,
       headers:{'content-type':'application/json','authorization':`Bearer ${c.apiKey}`},

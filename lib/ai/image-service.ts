@@ -138,7 +138,7 @@ export async function generateDreamHouseImage(input:ImageGenerationInput){
       // with a bounded default for walkthrough renders.
       size:outputSize,
     })
-    return{provider:'qwen' as const,model:result.model,url:result.url,ephemeral:true,fallback:false,requestId:result.requestId,inputImageCount:images.length,prompt:promptFor(input)}
+    return{provider:'qwen' as const,model:result.model,url:result.url,ephemeral:result.ephemeral,fallback:false,requestId:result.requestId,inputImageCount:images.length,prompt:promptFor(input)}
   }catch(error:any){
     console.error('[DreamHouse][image][qwen]',{model:c.imageModel,mode:input.mode,status:error?.status,message:error?.message})
     if(fallbackAllowed())return{provider:'mock' as const,model:'local-preset',url:fallbackImage(input),ephemeral:false,fallback:true,fallbackReason:error?.message||'Qwen image failed',prompt:promptFor(input)}

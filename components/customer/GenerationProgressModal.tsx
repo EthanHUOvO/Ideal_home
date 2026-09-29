@@ -21,8 +21,6 @@ type Props = {
   actionLabel?: string;
   onAction?: () => void;
   error?: string;
-  preparing?: boolean;
-  prepareRemainingSeconds?: number;
   maxProgress?: number;
   showTimeoutMessage?: boolean;
 };
@@ -41,8 +39,6 @@ export default function GenerationProgressModal({
   actionLabel = "查看结果",
   onAction,
   error,
-  preparing = false,
-  prepareRemainingSeconds = 4,
   maxProgress = 92,
   showTimeoutMessage = true,
 }: Props) {
@@ -68,14 +64,6 @@ export default function GenerationProgressModal({
       ? "复杂户型可能需要多一点时间，您的设计结果不会丢失。"
       : undefined;
 
-  const preparationMessage = prepareRemainingSeconds >= 4
-    ? "正在初始化三维场景…"
-    : prepareRemainingSeconds >= 3
-      ? "正在配置空间交互…"
-      : prepareRemainingSeconds >= 2
-        ? "正在准备漫游环境…"
-        : "正在进入您的3D空间…";
-
   return (
     <div className="generation-progress-backdrop" role="dialog" aria-modal="true" aria-label={title}>
       <section className="generation-progress-modal">
@@ -85,24 +73,6 @@ export default function GenerationProgressModal({
             <h2>这次生成遇到了一点问题</h2>
             <p>{error}</p>
             {onAction && <button className="generation-primary-action" onClick={onAction}>返回重新尝试</button>}
-          </>
-        ) : preparing ? (
-          <>
-            <div className="generation-progress-state complete">生成完成</div>
-            <h2>您的3D空间已创建完成</h2>
-            <p>{preparationMessage}</p>
-            <p className="generation-current-detail">正在完成场景初始化与交互配置。</p>
-            <div className="generation-progress-track" aria-label="生成进度 100%">
-              <span style={{ width: "100%" }} />
-            </div>
-            <strong className="generation-progress-value">100%</strong>
-            <div className="generation-preparing-status">
-              <p>✓ 户型结构解析完成</p>
-              <p>✓ 三维空间构建完成</p>
-              <p>✓ 门窗与空间关系完成</p>
-              <p>✓ 场景细节优化完成</p>
-              <small>预计还需 {Math.max(0, prepareRemainingSeconds)} 秒</small>
-            </div>
           </>
         ) : ready ? (
           <>

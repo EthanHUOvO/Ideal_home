@@ -83,10 +83,6 @@ type Residence = "one" | "two" | "three";
 type Slide = 0 | 1 | 2 | 3 | 4;
 type ModelExperience = "intro" | "generating" | "viewer";
 type ModelGenerationPhase = "idle" | "generating" | "preparing" | "completed" | "error";
-const DEMO_3D_MODE = process.env.NEXT_PUBLIC_DEMO_3D_MODE !== "false";
-const MODEL_TOTAL_DURATION_MIN_MS = 20_000;
-const MODEL_TOTAL_DURATION_MAX_MS = 25_000;
-const FINAL_PREPARATION_DURATION_MS = 4_000;
 type ProgressKind = "model" | "layout" | "render" | "bom";
 type ProgressTask = {
   id: string;
@@ -97,12 +93,12 @@ type ProgressTask = {
   error?: string;
 };
 type ApiStatus = {
-  mode: "mock" | "qwen" | "hybrid";
-  qwenConfigured: boolean;
-  textAuthenticated?: boolean;
-  imageAuthenticated?: boolean;
+  mode: "mock" | "local" | "qwen" | "hybrid";
+  localOnly?: boolean;
+  ready?: boolean;
+  services?: Record<string, { healthy: boolean; status?: number; message?: string }>;
   models: { layout: string; image: string; bom: string };
-  persistence?: { imageUrlsMayExpire: boolean; ossConfigured: boolean };
+  persistence?: { imageUrlsMayExpire: boolean; generatedImageDirectory?: string };
 };
 type GeneratedImage = {
   provider: "qwen" | "mock";
@@ -259,39 +255,7 @@ const PROGRESS_META: Record<ProgressKind, { title: string; estimatedSeconds: num
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function simulatedProgress(kind: ProgressKind, elapsedSeconds: number, estimatedSeconds: number) {
-  if (kind !== "model") return Math.min(92, 6 + (elapsedSeconds / Math.max(1, estimatedSeconds)) * 86);
-  const points = [
-    { at: 0, value: 3 },
-    { at: 0.05, value: 6 },
-    { at: 0.1, value: 9 },
-    { at: 0.16, value: 13 },
-    { at: 0.23, value: 17 },
-    { at: 0.31, value: 22 },
-    { at: 0.4, value: 28 },
-    { at: 0.47, value: 36 },
-    { at: 0.55, value: 48 },
-    { at: 0.64, value: 59 },
-    { at: 0.7, value: 68 },
-    { at: 0.77, value: 77 },
-    { at: 0.82, value: 82 },
-    { at: 0.88, value: 89 },
-    { at: 0.92, value: 94 },
-    { at: 0.96, value: 97 },
-    { at: 0.98, value: 99 },
-    { at: 1, value: 100 },
-  ];
-  const activeGenerationSeconds = Math.max(
-    1,
-    estimatedSeconds - FINAL_PREPARATION_DURATION_MS / 1000,
-  );
-  const ratio = Math.max(0, Math.min(1, elapsedSeconds / activeGenerationSeconds));
-  const nextIndex = points.findIndex((item) => ratio <= item.at);
-  if (nextIndex <= 0) return points[0].value;
-  if (nextIndex < 0) return 100;
-  const previous = points[nextIndex - 1];
-  const next = points[nextIndex];
-  const segment = (ratio - previous.at) / Math.max(0.001, next.at - previous.at);
-  return previous.value + (next.value - previous.value) * segment;
+  return Math.min(92, 6 + (elapsedSeconds / Math.max(1, estimatedSeconds)) * 86);
 }
 
 function customerErrorMessage(message: string) {
@@ -349,18 +313,25 @@ async function hashDataUrl(value: string) {
 const cloneScene = (s: SceneGraph) =>
   JSON.parse(JSON.stringify(s)) as SceneGraph;
 
-/**
- * The touch demo uses the already compiled Pascal SceneGraph as its prepared
- * model. Preloading the Pascal plugin here warms the same runtime used by the
- * Viewer without starting a new AI/3D generation request.
- */
-async function preloadPrepared3DModel(scene: SceneGraph) {
-  const integrity = assertPascalSceneIntegrity(scene);
-  if (!integrity.valid) {
-    throw new Error(`预制3D场景校验失败：${integrity.issues.join("；")}`);
+async function consumeSse(response: Response, onEvent: (type: string, data: any) => void) {
+  if (!response.ok || !response.body) throw new Error((await response.text()) || `3D生成服务返回 ${response.status}`);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      const frame = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const event = frame.split("\n").find((line) => line.startsWith("event:"))?.slice(6).trim() || "message";
+      const data = frame.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n");
+      if (data) onEvent(event, JSON.parse(data));
+      boundary = buffer.indexOf("\n\n");
+    }
+    if (done) break;
   }
-  await ensurePascalPlugin();
-  return cloneScene(scene);
 }
 
 function syncWallEditToPascalStore(before: SceneGraph, after: SceneGraph) {
@@ -479,7 +450,8 @@ export default function TouchCustomerPortal() {
     [sceneRevision, setSceneRevision] = useState(1);
 const [modelExperience, setModelExperience] = useState<ModelExperience>("intro");
   const [modelGenerationPhase, setModelGenerationPhase] = useState<ModelGenerationPhase>("idle");
-  const [prepareRemainingSeconds, setPrepareRemainingSeconds] = useState(10);
+  const [modelMcpProgress, setModelMcpProgress] = useState(0);
+  const [modelSourceNotice, setModelSourceNotice] = useState<{ source: "mcp" | "fallback"; reason?: string } | null>(null);
   const [floorPlanConfirmed, setFloorPlanConfirmed] = useState(false);
   const [model3DLoaded, setModel3DLoaded] = useState(false);
   const [progressTask, setProgressTask] = useState<ProgressTask | null>(null);
@@ -546,12 +518,7 @@ const [modelExperience, setModelExperience] = useState<ModelExperience>("intro")
   const [sessionHydrated, setSessionHydrated] = useState(false);
   const blueprintDirty = useRef(false);
   const blueprintSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const preparedModelPromise = useRef<Promise<SceneGraph> | null>(null);
-  const modelPreparationRun = useRef<string | null>(null);
-  const modelGenerationTimer = useRef<number | null>(null);
-  const modelPreparationStartedAt = useRef(0);
-  const modelPreparationTimer = useRef<number | null>(null);
-  const modelPreparationTimeout = useRef<number | null>(null);
+  const modelGenerationAbortController = useRef<AbortController | null>(null);
   const sceneForPersistence = useRef(scene);
   sceneForPersistence.current = scene;
   const committedSceneRef = useRef<SceneGraph>(cloneScene(scene));
@@ -622,14 +589,8 @@ const [modelExperience, setModelExperience] = useState<ModelExperience>("intro")
   }, []);
 
   function cancelModelGenerationTimers() {
-    if (modelGenerationTimer.current) window.clearTimeout(modelGenerationTimer.current);
-    if (modelPreparationTimer.current) window.clearInterval(modelPreparationTimer.current);
-    if (modelPreparationTimeout.current) window.clearTimeout(modelPreparationTimeout.current);
-    modelGenerationTimer.current = null;
-    modelPreparationTimer.current = null;
-    modelPreparationTimeout.current = null;
-    modelPreparationRun.current = null;
-    preparedModelPromise.current = null;
+    modelGenerationAbortController.current?.abort();
+    modelGenerationAbortController.current = null;
   }
 
   function createSessionRequest() {
@@ -874,15 +835,15 @@ const [modelExperience, setModelExperience] = useState<ModelExperience>("intro")
   const hasValidSelectedCaptureImage = isValidCapturedImage(selectedCaptureImage);
 
   const progressMeta = progressTask ? PROGRESS_META[progressTask.kind] : null;
-  const progressPresentationReady = Boolean(
-    progressTask?.ready && progressMeta && progressElapsed >= Math.ceil((progressTask.totalDurationMs || progressMeta.estimatedSeconds * 1000) / 1000),
-  );
+  const progressPresentationReady = Boolean(progressTask?.ready && progressMeta && (
+    progressTask.kind === "model" || progressElapsed >= Math.ceil((progressTask.totalDurationMs || progressMeta.estimatedSeconds * 1000) / 1000)
+  ));
   const progressValue = progressTask && progressMeta
-    ? progressTask.kind === "model" && modelGenerationPhase === "preparing"
+    ? progressPresentationReady
       ? 100
-      : progressPresentationReady
-      ? 100
-      : simulatedProgress(progressTask.kind, progressElapsed, progressMeta.estimatedSeconds)
+      : progressTask.kind === "model"
+        ? modelMcpProgress
+        : simulatedProgress(progressTask.kind, progressElapsed, progressMeta.estimatedSeconds)
     : 0;
 
   useEffect(() => {
@@ -901,21 +862,6 @@ const [modelExperience, setModelExperience] = useState<ModelExperience>("intro")
     const timer = window.setInterval(update, 250);
     return () => window.clearInterval(timer);
   }, [progressTask?.id]);
-
-  useEffect(() => {
-    if (modelGenerationPhase !== "preparing") return;
-    const update = () => {
-      const elapsed = Math.floor((Date.now() - modelPreparationStartedAt.current) / 1000);
-      setPrepareRemainingSeconds(Math.max(0, FINAL_PREPARATION_DURATION_MS / 1000 - elapsed));
-    };
-    update();
-    const timer = window.setInterval(update, 250);
-    modelPreparationTimer.current = timer;
-    return () => {
-      window.clearInterval(timer);
-      if (modelPreparationTimer.current === timer) modelPreparationTimer.current = null;
-    };
-  }, [modelGenerationPhase]);
 
   function beginProgressTask(kind: ProgressKind, totalDurationMs?: number) {
     const id = `${kind}-${Date.now()}`;
@@ -944,91 +890,122 @@ const [modelExperience, setModelExperience] = useState<ModelExperience>("intro")
     setProgressTask(null);
   }
 
-  function startModelGeneration() {
-    if (!DEMO_3D_MODE) {
-      setError("真实3D生成服务尚未配置。");
-      return;
+  function applyGeneratedScene(nextScene: SceneGraph, asBase = false) {
+    const snapshot = cloneScene(nextScene);
+    applySceneSnapshot(snapshot as any, { origin: "host" });
+    setScene(snapshot);
+    setSceneRevision((value) => value + 1);
+    setModel3DLoaded(true);
+    setModelExperience("viewer");
+    if (asBase) {
+      setBasePascalScene(cloneScene(snapshot));
+      committedSceneRef.current = cloneScene(snapshot);
+      blueprintDirty.current = false;
+      setHasUnsavedChanges(false);
+      try {
+        const generatedBlueprint = sceneToFloorplanBlueprint(snapshot);
+        setFloorplanSpec(blueprintToFloorplanSpec(generatedBlueprint));
+        setBlueprintCalibration(createDefaultCalibration(selectedVariant.variantId, generatedBlueprint, true));
+        setBlueprintSource("base");
+      } catch (conversionError) {
+        console.warn("[DreamHouse][model3d] generated scene could not be converted to an editable blueprint", conversionError);
+      }
     }
+  }
+
+  async function startModelGeneration() {
+    if (!modifiedFloorPlan?.url || modelGenerationPhase === "generating") return;
     setError("");
     cancelModelGenerationTimers();
     setModelExperience("generating");
     setModelGenerationPhase("generating");
     setModel3DLoaded(false);
-    modelPreparationRun.current = null;
-    setPrepareRemainingSeconds(FINAL_PREPARATION_DURATION_MS / 1000);
-    preparedModelPromise.current = preloadPrepared3DModel(scene);
-    preparedModelPromise.current.catch(() => undefined);
-    const totalDurationMs = Math.floor(
-      Math.random() * (MODEL_TOTAL_DURATION_MAX_MS - MODEL_TOTAL_DURATION_MIN_MS + 1),
-    ) + MODEL_TOTAL_DURATION_MIN_MS;
-    const generationDurationMs = totalDurationMs - FINAL_PREPARATION_DURATION_MS;
-    const taskId = beginProgressTask("model", totalDurationMs);
-    modelGenerationTimer.current = window.setTimeout(() => {
-      modelGenerationTimer.current = null;
-      if (modelPreparationRun.current === taskId) return;
-      modelPreparationRun.current = taskId;
-      modelPreparationStartedAt.current = Date.now();
-      setPrepareRemainingSeconds(FINAL_PREPARATION_DURATION_MS / 1000);
-      setModelGenerationPhase("preparing");
-      completeProgressTask(taskId);
-
-      const prepared = preparedModelPromise.current;
-      modelPreparationTimeout.current = window.setTimeout(() => {
-        void (async () => {
-          try {
-            if (!prepared) throw new Error("预制3D场景尚未开始加载");
-            await Promise.race([
-              prepared,
-              wait(1500).then(() => { throw new Error("预制3D场景加载超时"); }),
-            ]);
-            setModel3DLoaded(true);
-            setModelExperience("viewer");
-            setModelGenerationPhase("completed");
-            setProgressTask(null);
-            setError("");
-          } catch (error: any) {
-            console.error("[DreamHouse][3d-demo][preload]", error);
-            setModelGenerationPhase("error");
-            setProgressTask((current) => current?.id === taskId
-              ? { ...current, ready: false, error: "3D空间暂时无法加载。" }
-              : current);
-          }
-        })();
-      }, FINAL_PREPARATION_DURATION_MS);
-    }, generationDurationMs);
-  }
-
-  function retryPreparedModel() {
-    setError("");
-    cancelModelGenerationTimers();
-    setModelExperience("generating");
-    setModelGenerationPhase("preparing");
-    const prepared = preloadPrepared3DModel(scene);
-    preparedModelPromise.current = prepared;
-    prepared.then(() => {
-      setModel3DLoaded(true);
-      setModelExperience("viewer");
+    setModelMcpProgress(2);
+    setModelSourceNotice(null);
+    const taskId = beginProgressTask("model");
+    const controller = new AbortController();
+    modelGenerationAbortController.current = controller;
+    try {
+      const sourceImageDataUrl = modifiedFloorPlan.url.startsWith("data:image/")
+        ? modifiedFloorPlan.url
+        : await imageUrlToDataUrl(modifiedFloorPlan.url, controller.signal);
+      const sourceImageHash = modifiedFloorPlan.sourceImageHash || await hashDataUrl(sourceImageDataUrl);
+      const mcpSessionId = `${sessionId || "local"}-model3d-${Date.now().toString(36)}`;
+      const response = await fetch("/api/ai/model3d/stream", {
+        method: "POST",
+        signal: controller.signal,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sessionId: mcpSessionId,
+          sourceImageHash,
+          sourceImage: modifiedFloorPlan.url,
+          sourceImageDataUrl,
+          fallbackScene: scene,
+        }),
+      });
+      const toolProgress: Record<string, number> = {
+        begin_floorplan_scene: 8,
+        set_floor_structure: 35,
+        set_openings: 55,
+        populate_basic_furniture: 72,
+        validate_scene: 88,
+        commit_scene: 100,
+      };
+      await consumeSse(response, (eventType, event) => {
+        if (eventType === "tool") {
+          setModelMcpProgress(toolProgress[String(event.name)] || 5);
+          setLayoutProgress(`Pascal MCP：${String(event.name || "正在处理")}`);
+        } else if (eventType === "scene" && event.scene) {
+          applyGeneratedScene(event.scene as SceneGraph);
+        } else if (eventType === "validation") {
+          setModelMcpProgress(88);
+          setLayoutProgress(event.validation?.valid ? "Pascal 场景校验通过" : "正在修正 Pascal 场景校验问题");
+        } else if (eventType === "complete" && event.result?.scene) {
+          applyGeneratedScene(event.result.scene as SceneGraph, true);
+          setModelMcpProgress(100);
+          setModelSourceNotice({ source: "mcp" });
+          setModelGenerationPhase("completed");
+          setLayoutProgress("Qwen3.8 已通过 Pascal MCP 创建可编辑的3D户型");
+          completeProgressTask(taskId);
+        } else if (eventType === "fallback" && event.scene) {
+          applyGeneratedScene(event.scene as SceneGraph, true);
+          setModelMcpProgress(100);
+          setModelSourceNotice({ source: "fallback", reason: String(event.reason || "本地3D生成未通过校验") });
+          setModelGenerationPhase("completed");
+          setLayoutProgress("已载入预制模型回退方案");
+          completeProgressTask(taskId);
+        } else if (eventType === "error") {
+          throw new Error(String(event.message || "3D生成服务返回错误"));
+        }
+      });
+    } catch (generationError: any) {
+      if (generationError?.name === "AbortError") return;
+      const reason = generationError?.message || String(generationError);
+      console.error("[DreamHouse][model3d] streaming generation failed", generationError);
+      const fallback = cloneScene(scene);
+      Object.assign((fallback.nodes.building_house.metadata ||= {}), {
+        floorplanSource: "fallback-prebuilt",
+        sourceImageHash: modifiedFloorPlan.sourceImageHash || "unavailable",
+        sourceDrawing: modifiedFloorPlan.url,
+        fallbackReason: reason,
+        model: "prebuilt-pascal-v2",
+        scaleEstimated: false,
+        generatedAt: new Date().toISOString(),
+      });
+      applyGeneratedScene(fallback, true);
+      setModelMcpProgress(100);
+      setModelSourceNotice({ source: "fallback", reason });
       setModelGenerationPhase("completed");
-    }).catch((error: any) => {
-      console.error("[DreamHouse][3d-demo][retry]", error);
-      setModelExperience("intro");
-      setModelGenerationPhase("error");
-      setError("3D空间暂时无法加载。");
-    });
-  }
-
-  function useRecommendedModel() {
-    cancelModelGenerationTimers();
-    setModelExperience("viewer");
-    setModelGenerationPhase("completed");
-    setModel3DLoaded(true);
-    setProgressTask(null);
-    setLayoutProgress("已载入为您准备的推荐3D方案");
+      setLayoutProgress("已载入预制模型回退方案");
+      completeProgressTask(taskId);
+    } finally {
+      if (modelGenerationAbortController.current === controller) modelGenerationAbortController.current = null;
+    }
   }
 
   useEffect(() => {
-    if (!DEMO_3D_MODE || slide !== 2 || !floorPlanConfirmed || modelExperience !== "intro" || modelGenerationPhase !== "idle" || progressTask) return;
-    startModelGeneration();
+    if (slide !== 2 || !floorPlanConfirmed || modelExperience !== "intro" || modelGenerationPhase !== "idle" || progressTask) return;
+    void startModelGeneration();
   }, [slide, floorPlanConfirmed, modelExperience, progressTask]);
 
   useEffect(() => () => {
@@ -2640,16 +2617,22 @@ const [modelExperience, setModelExperience] = useState<ModelExperience>("intro")
           <div className="touch-slide step3-slide">
             <div className="touch-slide-head">
               <div><small>STEP 3</small><h1>创建您的3D空间</h1><p>我们会根据您确认的户型，建立墙体、地面、门窗以及基础家具。</p></div>
-              <div><button className="ghost" onClick={() => go(1)}>上一页</button><button disabled={modelExperience !== "viewer"} onClick={() => go(3)}>下一页</button>{restartButton}</div>
+              <div><button className="ghost" onClick={() => go(1)}>上一页</button><button disabled={modelExperience !== "viewer" || modelGenerationPhase !== "completed"} onClick={() => go(3)}>下一页</button>{restartButton}</div>
             </div>
             {modelExperience !== "viewer" ? (
               <section className="model-generation-intro">
                 <div className="model-generation-image"><img src={modifiedFloorPlan?.url || selectedVariant.imageUrl} alt="已确认的户型" /><span>{config.label} · 方案 {String(selectedVariant.optionIndex).padStart(2, "0")}</span></div>
-                <div className="model-generation-copy"><small>已确认户型</small><h2>为您的户型创建3D空间</h2><p>我们将根据最终确认的户型，建立墙体、地面、门窗以及基础家具。预设空间将在约 20–25 秒内完成，并自动进入模型。</p><ul><li>还原户型墙体与房间轮廓</li><li>放置门窗并检查通行关系</li><li>加入适合房间的基础家具</li></ul>{modelGenerationPhase === "error" && <div className="customer-error-note">3D空间暂时无法加载。</div>}<button className="touch-primary-cta" onClick={modelGenerationPhase === "error" ? retryPreparedModel : startModelGeneration} disabled={modelExperience === "generating"}>{modelExperience === "generating" ? "正在创建3D空间" : modelGenerationPhase === "error" ? "重新加载3D空间" : "创建3D空间"}</button></div>
+                <div className="model-generation-copy"><small>已确认户型</small><h2>为您的户型创建3D空间</h2><p>本地 Qwen3.8 将读取最终户型图，并通过 Pascal MCP 依次建立墙体、房间、门窗和基础家具。生成过程会实时显示在编辑器中。</p><ul><li>还原户型墙体与房间轮廓</li><li>放置门窗并检查通行关系</li><li>加入适合房间的基础家具</li></ul>{modelGenerationPhase === "error" && <div className="customer-error-note">3D空间暂时无法加载。</div>}<button className="touch-primary-cta" onClick={() => void startModelGeneration()} disabled={modelExperience === "generating"}>{modelExperience === "generating" ? "正在创建3D空间" : modelGenerationPhase === "error" ? "重新创建3D空间" : "创建3D空间"}</button></div>
               </section>
             ) : (
             <div className={`touch-model-grid model-viewer-grid ${wallEditMode ? "wall-mode-grid" : ""}`}>
               <article className="touch-panel pascal-panel">
+                {scene.nodes.building_house?.metadata?.floorplanSource === "mcp-qwen38-vulkan" && scene.nodes.building_house?.metadata?.scaleEstimated && (
+                  <div className="customer-result-note" role="status">尺寸按标准门宽 0.86m 估算</div>
+                )}
+                {scene.nodes.building_house?.metadata?.floorplanSource === "fallback-prebuilt" && (
+                  <div className="customer-error-note" role="alert">预制模型回退：{String(scene.nodes.building_house?.metadata?.fallbackReason || modelSourceNotice?.reason || "本地3D生成未通过校验")}</div>
+                )}
                 <div className="panel-inline-head">
                   <div>
                     <h3>我的3D户型</h3>
@@ -3165,10 +3148,13 @@ const [modelExperience, setModelExperience] = useState<ModelExperience>("intro")
         <section>
           <h3>Runtime</h3>
           <code>Mode: {status?.mode || "unknown"}</code>
-          <code>Text: {status?.textAuthenticated ? "connected" : "offline"}</code>
-          <code>Image: {status?.imageAuthenticated ? "connected" : "offline"}</code>
-          <code>Layout model: {status?.models.layout || "qwen3.8-flash"}</code>
-          <code>Image model: {status?.models.image || "qwen-image-3.0-pro"}</code>
+          <code>Text: {status?.services?.text?.healthy ? "connected" : "offline"}</code>
+          <code>Vision: {status?.services?.vision?.healthy ? "connected" : "offline"}</code>
+          <code>Image: {status?.services?.image?.healthy ? "connected" : "offline"}</code>
+          <code>MCP: {status?.services?.mcp?.healthy ? "connected" : "offline"}</code>
+          <code>Vulkan: {status?.services?.vulkan?.healthy ? "ready" : "offline"}</code>
+          <code>Layout model: {status?.models.layout || "Qwen3.8-27B-UD-Q4_K_XL"}</code>
+          <code>Image model: {status?.models.image || "Qwen-Image-2.1"}</code>
         </section>
         <section>
           <h3>Design Session</h3>
@@ -3212,8 +3198,6 @@ const [modelExperience, setModelExperience] = useState<ModelExperience>("intro")
           estimatedSeconds={progressTask.totalDurationMs ? Math.ceil(progressTask.totalDurationMs / 1000) : progressMeta.estimatedSeconds}
           ready={progressPresentationReady}
           error={progressTask.error}
-          preparing={progressTask.kind === "model" && modelGenerationPhase === "preparing"}
-          prepareRemainingSeconds={prepareRemainingSeconds}
           maxProgress={progressTask.kind === "model" ? 100 : progressTask.kind === "layout" ? 95 : 92}
           showTimeoutMessage={progressTask.kind !== "model"}
           completeTitle={progressMeta.completeTitle}
@@ -3221,7 +3205,6 @@ const [modelExperience, setModelExperience] = useState<ModelExperience>("intro")
           actionLabel={progressMeta.actionLabel}
           onAction={closeProgressTask}
           allowFallback={false}
-          onUseFallback={useRecommendedModel}
         />
       )}
       <footer className="touch-step-footer">
