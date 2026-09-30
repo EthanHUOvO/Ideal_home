@@ -464,7 +464,7 @@ function WalkthroughOverlay({
         <div>
           <b>第一人称漫游</b>
           <span>
-            WASD 移动 · 点击锁定鼠标或按住拖动转向 · Shift 加速 · E 开关门 · Esc 退出
+            WASD 移动 · 点击锁定鼠标或按住拖动转向 · Shift 加速 · E 开关门 · C 拍照 · Esc 退出
           </span>
           <span>
             真实尺度 {scale.areaM2}㎡ · {scale.widthM} × {scale.depthM}m · 视点 1.65m

@@ -17,9 +17,9 @@ export function getAiConfig(){
     mcpUrl:(process.env.PASCAL_MCP_URL||'http://pascal-mcp:3100/mcp').replace(/\/$/,''),
     layoutModel:process.env.LOCAL_TEXT_MODEL||process.env.QWEN_LAYOUT_MODEL||process.env.QWEN_TEXT_MODEL||'Qwen3.8-27B-UD-Q4_K_XL',
     bomModel:process.env.LOCAL_TEXT_MODEL||process.env.QWEN_BOM_MODEL||process.env.QWEN_TEXT_MODEL||'Qwen3.8-27B-UD-Q4_K_XL',
-    imageModel:process.env.LOCAL_IMAGE_MODEL||process.env.QWEN_IMAGE_MODEL||'Qwen-Image-2.1',
+    imageModel:process.env.LOCAL_IMAGE_MODEL||process.env.QWEN_IMAGE_MODEL||'Z-Image-Turbo',
     textTimeoutMs:num('QWEN_TEXT_TIMEOUT_MS',60000),
-    imageTimeoutMs:num('QWEN_IMAGE_TIMEOUT_MS',900000),
+    imageTimeoutMs:num('QWEN_IMAGE_TIMEOUT_MS',1800000),
   }
 }
 

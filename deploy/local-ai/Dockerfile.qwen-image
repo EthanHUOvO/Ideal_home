@@ -1,28 +1,6 @@
-FROM docker.m.daocloud.io/library/node:22-bookworm-slim
-
-ARG QWEN_IMAGE_RUNTIME_VERSION=20260924
-RUN rm -f /etc/apt/sources.list.d/debian.sources \
-  && printf '%s\n' \
-    'deb http://mirrors.aliyun.com/debian bookworm main' \
-    'deb http://mirrors.aliyun.com/debian bookworm-updates main' \
-    'deb http://mirrors.aliyun.com/debian-security bookworm-security main' \
-    > /etc/apt/sources.list \
-  && apt-get -o Acquire::ForceIPv4=true update \
-  && apt-get -o Acquire::ForceIPv4=true install -y --no-install-recommends ca-certificates curl unzip libgomp1 libvulkan1 mesa-vulkan-drivers \
-  && rm -rf /var/lib/apt/lists/* \
-  && curl -fL --retry 5 \
-    "https://github.com/nihui/qwenimage-ncnn-vulkan/releases/download/${QWEN_IMAGE_RUNTIME_VERSION}/qwenimage-ncnn-vulkan-${QWEN_IMAGE_RUNTIME_VERSION}-linux.zip" \
-    -o /tmp/qwen-image.zip \
-  && unzip /tmp/qwen-image.zip -d /opt/qwen-image-release \
-  && install -m 0755 "/opt/qwen-image-release/qwenimage-ncnn-vulkan-${QWEN_IMAGE_RUNTIME_VERSION}-linux/qwenimage-ncnn-vulkan" /usr/local/bin/qwenimage-ncnn-vulkan \
-  && rm -rf /tmp/qwen-image.zip /opt/qwen-image-release
-
+FROM ideal-home-local:qwen-image
 WORKDIR /app
 COPY services/qwen-image-local/server.ts /app/server.ts
-ENV NODE_ENV=production \
-  QWEN_IMAGE_BIN=/usr/local/bin/qwenimage-ncnn-vulkan \
-  QWEN_IMAGE_MODEL_PATH=/models/qwenimage21 \
-  GENERATED_IMAGE_DIR=/data/generated \
-  QWEN_IMAGE_JOB_TIMEOUT_MS=900000
+ENV NODE_ENV=production SD_CPP_BIN=/opt/sd/sd-cli SD_DIFFUSION_MODEL=/models/z_image_turbo-Q8_0.gguf SD_TEXT_ENCODER=/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf SD_VAE=/models/ae.safetensors GENERATED_IMAGE_DIR=/data/generated SD_JOB_TIMEOUT_MS=1800000
 EXPOSE 8200
 CMD ["node", "--experimental-strip-types", "/app/server.ts"]

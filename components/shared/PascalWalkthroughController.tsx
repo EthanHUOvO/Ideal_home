@@ -203,6 +203,11 @@ export default function PascalWalkthroughController({
         toggleTargetDoor();
         return;
       }
+      if ((e.code === "KeyC" || String(e.key || "").toLowerCase() === "c") && !e.repeat) {
+        e.preventDefault();
+        captureWithCooldown();
+        return;
+      }
       if ((e.key === "Enter" || e.code === "Enter") && !e.repeat) {
         e.preventDefault();
         captureWithCooldown();

@@ -20,6 +20,7 @@ export async function POST(req: NextRequest) {
       "roomName",
       "pascalScreenshot",
       "stylePrompt",
+      "size",
     ]);
     const unexpectedKey = Object.keys(body || {}).find((key) => !allowedKeys.has(key));
     if (unexpectedKey)
@@ -47,6 +48,7 @@ export async function POST(req: NextRequest) {
       pascalScreenshot: body.pascalScreenshot,
       roomName: body.roomName,
       stylePrompt: String(body.stylePrompt).trim(),
+      size: body.size ? String(body.size) : undefined,
     });
     return NextResponse.json({
       image,

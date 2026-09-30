@@ -11,13 +11,14 @@ services:
       NODE_ENV: production
       AI_MODE: local
       LOCAL_TEXT_BASE_URL: http://ai-gateway:8300/text/v1
-      LOCAL_TEXT_MODEL: Qwen3.8-27B-UD-Q4_K_XL
-      LOCAL_VISION_PROJECTOR: mmproj-F16.gguf
+      LOCAL_TEXT_MODEL: Qwen3.8-27B-Q8_0
+      LOCAL_VISION_PROJECTOR: mmproj-Qwen3.8-27B-Q8_0.gguf
       LOCAL_IMAGE_BASE_URL: http://ai-gateway:8300/image
-      LOCAL_IMAGE_MODEL: Qwen-Image-2.1
+      LOCAL_IMAGE_MODEL: Z-Image-Turbo
       PASCAL_MCP_URL: http://pascal-mcp:3100/mcp
       QWEN_TEXT_TIMEOUT_MS: "600000"
-      QWEN_IMAGE_TIMEOUT_MS: "900000"
+      QWEN_IMAGE_TIMEOUT_MS: "1800000"
+      QWEN_IMAGE_SIZE: "512*512"
       GENERATED_IMAGE_DIR: /data/generated
       VULKAN_DEVICE_VISIBLE: "true"
       VULKAN_DEVICE: /dev/dri/renderD128
@@ -40,6 +41,7 @@ services:
       LOCAL_AI_GATEWAY_PORT: "8300"
       TEXT_UPSTREAM: http://qwen-text:8080
       IMAGE_UPSTREAM: http://qwen-image:8200
+      LOCAL_AI_UPSTREAM_TIMEOUT_MS: "1900000"
     depends_on:
       - qwen-text
       - qwen-image
@@ -50,11 +52,17 @@ services:
     restart: unless-stopped
     command:
       - --model
-      - /models/Qwen3.8-27B-UD-Q4_K_XL.gguf
+      - /models/Qwen3.8-27B-Q8_0.gguf
       - --mmproj
-      - /models/mmproj-F16.gguf
+      - /models/mmproj-Qwen3.8-27B-Q8_0.gguf
       - --alias
-      - Qwen3.8-27B-UD-Q4_K_XL
+      - Qwen3.8-27B-Q8_0
+      - --model-draft
+      - /models/mtp-Qwen3.8-27B-Q8_0.gguf
+      - --spec-type
+      - draft-mtp
+      - --spec-draft-n-max
+      - "8"
       - --host
       - 0.0.0.0
       - --port
@@ -74,7 +82,7 @@ services:
       - --metrics
       - --no-webui
     volumes:
-      - ${MODEL_ROOT:-/srv/ideal-home/models}/text:/models:ro
+      - ${MODEL_ROOT:-/srv/ideal-home/models}/llm:/models:ro
     devices:
       - /dev/dri:/dev/dri
     environment:
@@ -83,19 +91,40 @@ services:
     networks: [local-ai]
 
   qwen-image:
-    image: ${QWEN_IMAGE_IMAGE:-ideal-home-local:qwen-image}
+    image: ${QWEN_IMAGE_IMAGE:-ideal-home-local:sd-cpp}
     build:
       context: ../..
       dockerfile: deploy/local-ai/Dockerfile.qwen-image
-      args:
-        QWEN_IMAGE_RUNTIME_VERSION: ${QWEN_IMAGE_RUNTIME_VERSION:-20260924}
     restart: unless-stopped
     environment:
       LOCAL_IMAGE_PORT: "8200"
+      SD_DIFFUSION_MODEL: /models/z_image_turbo-Q8_0.gguf
+      SD_TEXT_ENCODER: /models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf
+      SD_VAE: /models/ae.safetensors
+      SD_CPP_BIN: /opt/sd/sd-cli
+      GENERATED_IMAGE_DIR: /data/generated
+      SD_JOB_TIMEOUT_MS: "1800000"
+      AMD_VULKAN_ICD: RADV
+      LD_LIBRARY_PATH: /opt/sd
+    volumes:
+      - ${MODEL_ROOT:-/srv/ideal-home/models}/z-image:/models:ro
+      - ${DATA_ROOT:-/srv/ideal-home/data}/generated:/data/generated
+      - /srv/ideal-home/src/stable-diffusion.cpp/prebuilt:/opt/sd:ro
+    devices:
+      - /dev/dri:/dev/dri
+    shm_size: 2gb
+    networks: [local-ai]
+
+  qwen-image-21:
+    image: ${QWEN_IMAGE_21_IMAGE:-ideal-home-local:qwen-image}
+    restart: unless-stopped
+    environment:
+      LOCAL_IMAGE_PORT: "8200"
+      QWEN_IMAGE_BIN: /usr/local/bin/qwenimage-ncnn-vulkan
       QWEN_IMAGE_MODEL_PATH: /models/qwenimage21
       GENERATED_IMAGE_DIR: /data/generated
-      QWEN_IMAGE_TMP_DIR: /tmp/qwen-image-jobs
       QWEN_IMAGE_JOB_TIMEOUT_MS: "900000"
+      AMD_VULKAN_ICD: RADV
     volumes:
       - ${MODEL_ROOT:-/srv/ideal-home/models}/qwen-image:/models:ro
       - ${DATA_ROOT:-/srv/ideal-home/data}/generated:/data/generated
@@ -103,6 +132,50 @@ services:
       - /dev/dri:/dev/dri
     shm_size: 2gb
     networks: [local-ai]
+
+  ai-gateway-qwen-image21:
+    image: ${WEB_IMAGE:-ideal-home-local:web}
+    restart: unless-stopped
+    command: ["node", "--experimental-strip-types", "services/local-ai-gateway/server.ts"]
+    environment:
+      LOCAL_AI_GATEWAY_PORT: "8301"
+      TEXT_UPSTREAM: http://qwen-text:8080
+      IMAGE_UPSTREAM: http://qwen-image-21:8200
+      LOCAL_AI_UPSTREAM_TIMEOUT_MS: "1900000"
+    depends_on:
+      - qwen-text
+      - qwen-image-21
+    networks: [local-ai]
+
+  web-qwen-image21:
+    image: ${WEB_IMAGE:-ideal-home-local:web}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      AI_MODE: local
+      LOCAL_TEXT_BASE_URL: http://ai-gateway-qwen-image21:8301/text/v1
+      LOCAL_TEXT_MODEL: Qwen3.8-27B-Q8_0
+      LOCAL_VISION_PROJECTOR: mmproj-Qwen3.8-27B-Q8_0.gguf
+      LOCAL_IMAGE_BASE_URL: http://ai-gateway-qwen-image21:8301/image
+      LOCAL_IMAGE_MODEL: Qwen-Image-2.1
+      PASCAL_MCP_URL: http://pascal-mcp:3100/mcp
+      QWEN_TEXT_TIMEOUT_MS: "600000"
+      QWEN_IMAGE_TIMEOUT_MS: "1800000"
+      QWEN_IMAGE_STEPS: "8"
+      QWEN_INTERIOR_MAX_DIMENSION: "1024"
+      GENERATED_IMAGE_DIR: /data/generated
+      VULKAN_DEVICE_VISIBLE: "true"
+      VULKAN_DEVICE: /dev/dri/renderD128
+    volumes:
+      - ${DATA_ROOT:-/srv/ideal-home/data}/generated:/data/generated
+    devices:
+      - /dev/dri:/dev/dri
+    ports:
+      - "3000:3000"
+    depends_on:
+      - ai-gateway-qwen-image21
+      - pascal-mcp
+    networks: [local-ai, web-ingress]
 
   pascal-mcp:
     image: ${WEB_IMAGE:-ideal-home-local:web}
@@ -112,7 +185,7 @@ services:
       NODE_ENV: production
       PASCAL_MCP_PORT: "3100"
       PASCAL_SCENE_DIR: /data/scenes
-      LOCAL_TEXT_MODEL: Qwen3.8-27B-UD-Q4_K_XL
+      LOCAL_TEXT_MODEL: Qwen3.8-27B-Q8_0
     volumes:
       - ${DATA_ROOT:-/srv/ideal-home/data}/scenes:/data/scenes
     networks: [local-ai]

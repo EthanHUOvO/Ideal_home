@@ -1,4 +1,7 @@
 import { fallbackAllowed,getAiConfig,getAiMode,qwenConfigured } from './config'
+import { readFile, writeFile } from 'node:fs/promises'
+import path from 'node:path'
+import sharp from 'sharp'
 import { qwenGenerateImage } from './qwen-image-client'
 import { prepareFloorPlanForAI, prepareImageForInteriorEdit } from './server-image'
 import { buildRoomTypePrompt, inferRoomType, roomTypeNegativePrompt, type RoomType } from '@/config/roomTypes'
@@ -39,13 +42,31 @@ export const BASE_FLOOR_PLAN_EDIT_PROMPT = `请直接编辑输入的二维户型
 只执行用户要求的修改，不要重新设计整张户型。`
 
 export function buildFloorPlanEditPrompt(modificationRequest:string){
-  return modificationRequest.trim()
+  return BASE_FLOOR_PLAN_EDIT_PROMPT.replace("{modificationRequest}", modificationRequest.trim())
 }
 
 function fallbackImage(input:ImageGenerationInput){
   // Keep fallback output bound to this request. A fixed preset would make
   // option-02..08 appear to reuse option-01 when the online model is down.
   return input.mode==='floorplan-edit'?input.originalFloorplan:input.pascalScreenshot
+}
+
+async function normalizeLocalGeneratedImage(url:string, width?:number, height?:number){
+  if(!width || !height || !url.startsWith('/api/generated-images/')) return
+  const name=path.basename(url)
+  if(!/^[a-f0-9-]+\.(?:png|jpg|jpeg|webp)$/i.test(name)) return
+  const directory=process.env.GENERATED_IMAGE_DIR || path.join(process.cwd(),'data','generated')
+  const outputPath=path.join(directory,name)
+  try{
+    const source=await readFile(outputPath)
+    const metadata=await sharp(source).metadata()
+    if(metadata.width===width && metadata.height===height) return
+    const normalized=await sharp(source).resize(width,height,{fit:'fill'}).png().toBuffer()
+    await writeFile(outputPath,normalized)
+    console.info('[DreamHouse][image][normalize]',{url,width,height,sourceWidth:metadata.width,sourceHeight:metadata.height,bytes:normalized.byteLength})
+  }catch(error){
+    console.warn('[DreamHouse][image][normalize-failed]',{url,width,height,message:(error as Error)?.message})
+  }
 }
 
 function promptFor(input:ImageGenerationInput){
@@ -89,7 +110,7 @@ export async function generateDreamHouseImage(input:ImageGenerationInput){
       : await prepareFloorPlanForAI(sources[0])
     const images=[prepared.dataUrl]
     const outputSize = input.mode === 'walkthrough-render'
-      ? (input.size || process.env.QWEN_IMAGE_SIZE || prepared.size)
+      ? (input.size || prepared.size)
       : prepared.size
     const finalPrompt=promptFor(input)
     if(input.mode==='floorplan-edit'){
@@ -123,6 +144,7 @@ export async function generateDreamHouseImage(input:ImageGenerationInput){
       })
     }
     const result=await qwenGenerateImage({
+      mode:input.mode,
       images,
       prompt:finalPrompt,
       // STEP 4 already sends a complete style/geometry prompt. Prompt
@@ -138,6 +160,7 @@ export async function generateDreamHouseImage(input:ImageGenerationInput){
       // with a bounded default for walkthrough renders.
       size:outputSize,
     })
+    await normalizeLocalGeneratedImage(result.url,prepared.originalWidth || prepared.width,prepared.originalHeight || prepared.height)
     return{provider:'qwen' as const,model:result.model,url:result.url,ephemeral:result.ephemeral,fallback:false,requestId:result.requestId,inputImageCount:images.length,prompt:promptFor(input)}
   }catch(error:any){
     console.error('[DreamHouse][image][qwen]',{model:c.imageModel,mode:input.mode,status:error?.status,message:error?.message})

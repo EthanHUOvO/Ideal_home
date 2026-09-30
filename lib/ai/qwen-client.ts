@@ -23,22 +23,23 @@ export function qwenBaseUrl(){return getAiConfig().compatBaseUrl}
 export function qwenModel(){return getAiConfig().layoutModel}
 export function qwenConfigured(){const c=getAiConfig();return c.mode==='local'?Boolean(c.compatBaseUrl):Boolean(c.apiKey)}
 
-export async function qwenChatCompletion(body:Record<string,any>,options?:{model?:string;stage?:string}){
+export async function qwenChatCompletion(body:Record<string,any>,options?:{model?:string;stage?:string;maxTokens?:number;temperature?:number}){
   const c=getAiConfig(),model=options?.model||c.layoutModel,stage=options?.stage||'text'
   if(c.mode!=='local'&&!c.apiKey)throw new QwenRequestError({message:'QWEN_API_KEY is not configured',stage,model})
   const headers:Record<string,string>={'content-type':'application/json'}
   if(c.apiKey)headers.authorization=`Bearer ${c.apiKey}`
   const res=await withTimeout(`${c.compatBaseUrl}/chat/completions`,{
     method:'POST',headers,
-    body:JSON.stringify({model,enable_thinking:false,chat_template_kwargs:{enable_thinking:false},...body})
+    body:JSON.stringify({model,enable_thinking:false,chat_template_kwargs:{enable_thinking:false},...(options?.maxTokens?{max_tokens:options.maxTokens}:{}),...(options?.temperature!==undefined?{temperature:options.temperature}:{}),...body})
   },c.textTimeoutMs,stage,model)
   return await res.json()
 }
 
-export async function qwenChatJson(messages:any[],options?:{model?:string;stage?:string}){
+export async function qwenChatJson(messages:any[],options?:{model?:string;stage?:string;maxTokens?:number;temperature?:number}){
   const c=getAiConfig()
   const data:any=await qwenChatCompletion({messages,...(c.mode==='local'?{}:{response_format:{type:'json_object'}}),temperature:.15},options)
-  const text=data.choices?.[0]?.message?.content||'{}'
+  const raw=String(data.choices?.[0]?.message?.content||'{}')
+  const text=raw.replace(/<think>[\s\S]*?<\/think>/gi,'').trim()
   try{return JSON.parse(text)}catch{
     const fenced=String(text).match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1]
     const object=String(text).match(/\{[\s\S]*\}/)?.[0]

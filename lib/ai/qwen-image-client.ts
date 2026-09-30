@@ -1,7 +1,37 @@
+import { request as httpRequest } from 'node:http'
 import { getAiConfig } from './config'
 import { QwenRequestError } from './qwen-client'
 
-export type QwenImageRequest={images?:string[];prompt:string;promptExtend?:boolean;negativePrompt?:string;size?:string;seed?:number;model?:string}
+export type QwenImageRequest={mode?:string;images?:string[];prompt:string;promptExtend?:boolean;negativePrompt?:string;size?:string;seed?:number;model?:string;steps?:number}
+
+type LocalImageResponse={status:number;body:string;contentType:string}
+
+function postLocalImage(urlString:string, body:string, timeoutMs:number):Promise<LocalImageResponse>{
+  return new Promise((resolve,reject)=>{
+    const target=new URL(urlString)
+    const req=httpRequest({
+      protocol:target.protocol,
+      hostname:target.hostname,
+      port:target.port,
+      path:`${target.pathname}${target.search}`,
+      method:'POST',
+      headers:{'content-type':'application/json','content-length':Buffer.byteLength(body),connection:'close'},
+    },res=>{
+      const chunks:Buffer[]=[]
+      res.on('data',chunk=>chunks.push(Buffer.from(chunk)))
+      res.on('end',()=>resolve({
+        status:res.statusCode||502,
+        body:Buffer.concat(chunks).toString('utf8'),
+        contentType:String(res.headers['content-type']||'application/json'),
+      }))
+      res.on('error',reject)
+    })
+    req.setTimeout(timeoutMs,()=>req.destroy(new Error(`Local Qwen Image timed out after ${timeoutMs}ms`)))
+    req.on('error',reject)
+    req.write(body)
+    req.end()
+  })
+}
 
 export async function qwenGenerateImage(input:QwenImageRequest){
   const c=getAiConfig(),model=input.model||c.imageModel
@@ -18,12 +48,9 @@ export async function qwenGenerateImage(input:QwenImageRequest){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),c.imageTimeoutMs)
   try{
     if(c.mode==='local'){
-      const res=await fetch(`${c.nativeBaseUrl}/v1/images/generations`,{
-        method:'POST',signal:controller.signal,headers:{'content-type':'application/json'},
-        body:JSON.stringify({model,prompt:input.prompt,images,size:input.size,negativePrompt:input.negativePrompt,seed:input.seed,steps:40,guidanceScale:1})
-      })
-      const responseText=await res.text();let data:any={};try{data=JSON.parse(responseText)}catch{}
-      if(!res.ok)throw new QwenRequestError({message:`Local Qwen Image failed: HTTP ${res.status} ${responseText.slice(0,1200)}`,status:res.status,stage:'image',model})
+      const response=await postLocalImage(`${c.nativeBaseUrl}/v1/images/generations`,JSON.stringify({mode:input.mode,model,prompt:input.prompt,images,size:input.size,negativePrompt:input.negativePrompt,seed:input.seed,steps:Number(input.steps)||Number(process.env.QWEN_IMAGE_STEPS)||8,guidanceScale:1}),c.imageTimeoutMs)
+      const responseText=response.body;let data:any={};try{data=JSON.parse(responseText)}catch{}
+      if(response.status<200||response.status>=300)throw new QwenRequestError({message:`Local Qwen Image failed: HTTP ${response.status} ${responseText.slice(0,1200)}`,status:response.status,stage:'image',model})
       const url=data?.url||data?.data?.[0]?.url
       if(!url)throw new QwenRequestError({message:'Local Qwen Image response did not include an image URL',stage:'image',model})
       return{url,requestId:data?.requestId||'',usage:data?.usage||null,model,ephemeral:false}

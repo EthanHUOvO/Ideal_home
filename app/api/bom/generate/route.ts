@@ -19,13 +19,14 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       );
     const budget = buildResidentialBudget(body.design, { ...defaultResidentialBudgetSettings(), ...(body.budgetSettings || {}) });
-    const bom = body.taskType === "residential" ? null : await generateDetailedBom(body);
+    // Quantities and prices stay deterministic; local Qwen enriches the engineering BOM.
+    const bom = await generateDetailedBom(body);
     const c = getAiConfig();
     return NextResponse.json({
       bom,
       budget,
-      provider: body.taskType === "residential" ? "local-rules" : bom.aiProvider,
-      model: body.taskType === "residential" ? "住宅规则引擎" : bom.aiProvider === "qwen" ? c.bomModel : "local-rules/mock",
+      provider: bom.aiProvider,
+      model: bom.aiProvider === "qwen" ? c.bomModel : "local-rules/mock",
       promptVersion: body.taskType === "residential" ? RESIDENTIAL_RENOVATION_PROMPT.length : undefined,
       mode: c.mode,
       sessionId: body.sessionId,

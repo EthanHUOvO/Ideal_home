@@ -32,12 +32,15 @@ export function createQwenProvider():AiProvider{
     },
     async enrichBom(input:BomEnrichmentRequest):Promise<BomAiEnrichment>{
       const compactItems=input.draftItems.map(item=>({id:item.id,level:item.level,category:item.category,roomId:item.roomId,room:item.room,label:item.label,specification:item.specification,quantity:item.quantity,unit:item.unit,material:item.material,source:item.source,sourceNodeId:item.sourceNodeId}))
-      const context={profile:input.profile,drawing:input.drawing?{fileName:input.drawing.fileName,fileType:input.drawing.fileType,templateId:input.drawing.templateId,detected:input.drawing.detected}:undefined,design:{version:input.design.version,label:input.design.label,scenario:input.design.scenario},geometry:input.geometry,materialCatalog:input.materialCatalog,manufacturingRules:input.manufacturingRules,draftItems:compactItems}
-      const userContent:any[]=input.drawing?.previewDataUrl&&input.drawing.fileType.startsWith('image/')?[{type:'image_url',image_url:{url:input.drawing.previewDataUrl}},{type:'text',text:JSON.stringify(context)}]:[{type:'text',text:JSON.stringify(context)}]
+      const context={profile:input.profile,drawing:input.drawing?{fileName:input.drawing.fileName,fileType:input.drawing.fileType,templateId:input.drawing.templateId,detected:input.drawing.detected}:undefined,design:{version:input.design.version,label:input.design.label,scenario:input.design.scenario},geometry:input.geometry,materialCatalog:input.materialCatalog,manufacturingRules:input.manufacturingRules,draftItems:compactItems.slice(0,12)}
+      // BOM enrichment is driven by the validated SceneGraph. Do not send the
+      // full floorplan bitmap here: it activates the vision path and can exceed
+      // the local Vulkan text request timeout.
+      const userContent:any[]=[{type:'text',text:JSON.stringify(context)}]
       const payload=await qwenChatJson([
-        {role:'system',content:'你是DreamHouse BOM材料与制造工艺助手。DreamHouse几何引擎已经计算了所有数量、尺寸、面积和sourceNodeId；你绝对不能修改这些工程量。只为现有itemId补充 material、finish、process、installationMethod、performance、notes。只输出JSON：{summary:string,items:[{itemId,material?,finish?,process?,installationMethod?,performance?:string[],notes?}]}。不得增加不存在的itemId。优先结合用户画像、二维户型图、材料目录和制造规则。'},
+        {role:'system',content:'你是DreamHouse BOM材料与制造工艺助手。几何引擎已经计算所有数量、尺寸、面积和sourceNodeId，绝对不能修改工程量。为现有itemId补充材料和工艺，字段只允许 material、finish、process、installationMethod、performance、notes。只输出JSON：{summary:string,items:[{itemId,material?,finish?,process?,installationMethod?,performance?:string[],notes?}]}。不得增加itemId。每个字段使用简短中文短语。'},
         {role:'user',content:userContent}
-      ],{model:getAiConfig().bomModel,stage:'bom'})
+      ],{model:getAiConfig().bomModel,stage:'bom',maxTokens:2048,temperature:0.1})
       return{summary:String(payload.summary||''),items:Array.isArray(payload.items)?payload.items:[]}
     }
   }

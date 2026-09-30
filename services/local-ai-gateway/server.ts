@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 
 const port = Number(process.env.LOCAL_AI_GATEWAY_PORT || 8300);
 const textBaseUrl = (process.env.TEXT_UPSTREAM || "http://qwen-text:8080").replace(/\/$/, "");
@@ -23,23 +23,51 @@ function enqueue<T>(work: () => Promise<T>) {
   return job;
 }
 
+const upstreamTimeoutMs = Number(process.env.LOCAL_AI_UPSTREAM_TIMEOUT_MS || 1_000_000);
+
+function requestUpstream(urlString: string, method: string, contentType: string, body?: Buffer) {
+  return new Promise<{ status: number; contentType: string; payload: Buffer }>((resolve, reject) => {
+    const target = new URL(urlString);
+    const request = httpRequest({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port,
+      path: `${target.pathname}${target.search}`,
+      method,
+      headers: {
+        "content-type": contentType,
+        ...(body ? { "content-length": String(body.length) } : {}),
+        connection: "close",
+      },
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+      response.on("end", () => resolve({
+        status: response.statusCode || 502,
+        contentType: String(response.headers["content-type"] || "application/json"),
+        payload: Buffer.concat(chunks),
+      }));
+      response.on("error", reject);
+    });
+    request.setTimeout(upstreamTimeoutMs, () => request.destroy(new Error(`upstream request timed out after ${upstreamTimeoutMs}ms`)));
+    request.on("error", reject);
+    if (body) request.write(body);
+    request.end();
+  });
+}
+
 async function proxy(req: any, res: any, upstream: string, path: string, serialized: boolean) {
   const body = req.method === "GET" || req.method === "HEAD" ? undefined : await readBody(req);
   const run = async () => {
     const startedAt = Date.now();
-    const response = await fetch(`${upstream}${path}`, {
-      method: req.method,
-      headers: { "content-type": req.headers["content-type"] || "application/json" },
-      body,
-    });
-    const payload = Buffer.from(await response.arrayBuffer());
+    const response = await requestUpstream(`${upstream}${path}`, req.method, req.headers["content-type"] || "application/json", body);
     res.writeHead(response.status, {
-      "content-type": response.headers.get("content-type") || "application/json",
+      "content-type": response.contentType,
       "cache-control": "no-store",
       "x-local-ai-elapsed-ms": String(Date.now() - startedAt),
       "x-local-ai-serialized": serialized ? "true" : "false",
     });
-    res.end(payload);
+    res.end(response.payload);
   };
   await (serialized ? enqueue(run) : run());
 }

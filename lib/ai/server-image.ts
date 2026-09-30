@@ -2,6 +2,8 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import sharp from 'sharp'
 
+const round32=(n:number)=>Math.max(32,Math.round(n/32)*32)
+
 function mime(file:string){const ext=path.extname(file).toLowerCase();if(ext==='.jpg'||ext==='.jpeg')return'image/jpeg';if(ext==='.webp')return'image/webp';if(ext==='.gif')return'image/gif';return'image/png'}
 
 export async function resolveImageInput(value:string):Promise<string>{
@@ -19,6 +21,8 @@ export type PreparedInteriorImage = {
   width?: number
   height?: number
   size?: string
+  originalWidth?: number
+  originalHeight?: number
 }
 
 export type PreparedFloorPlanImage = PreparedInteriorImage & { bytes?: number }
@@ -41,11 +45,11 @@ export async function prepareFloorPlanForAI(value:string):Promise<PreparedFloorP
   let scale=Math.min(1,maxDimension/Math.max(sourceWidth,sourceHeight))
   if(sourceWidth*sourceHeight*scale*scale>maxArea)
     scale=Math.sqrt(maxArea/(sourceWidth*sourceHeight))
-  const width=Math.max(1,Math.floor(sourceWidth*scale))
-  const height=Math.max(1,Math.floor(sourceHeight*scale))
+  const width=round32(Math.max(1,Math.floor(sourceWidth*scale)))
+  const height=round32(Math.max(1,Math.floor(sourceHeight*scale)))
   const needsResize=width!==sourceWidth||height!==sourceHeight
   const output=needsResize
-    ? await sharp(source).resize(width,height,{fit:'inside',withoutEnlargement:true}).png().toBuffer()
+    ? await sharp(source).resize(width,height,{fit:'fill'}).png().toBuffer()
     : source
   const mimeType=needsResize?'image/png':resolved.slice(5,resolved.indexOf(';'))
   return{
@@ -74,7 +78,7 @@ export async function prepareImageForInteriorEdit(value:string):Promise<Prepared
   const sourceWidth=metadata.width,sourceHeight=metadata.height
   if(!sourceWidth||!sourceHeight)throw new Error('Unable to read source image dimensions')
 
-  const maxDimension=Number(process.env.QWEN_INTERIOR_MAX_DIMENSION||1536)
+  const maxDimension=Number(process.env.QWEN_INTERIOR_MAX_DIMENSION||2048)
   const minArea=512*512
   const maxArea=2048*2048
   let scale=Math.min(1,maxDimension/Math.max(sourceWidth,sourceHeight))
@@ -83,8 +87,8 @@ export async function prepareImageForInteriorEdit(value:string):Promise<Prepared
   const width=Math.max(1,Math.round(sourceWidth*scale))
   const height=Math.max(1,Math.round(sourceHeight*scale))
   const pixelScale=Math.sqrt(maxArea/(width*height))
-  const finalWidth=pixelScale<1?Math.max(1,Math.floor(width*pixelScale)):width
-  const finalHeight=pixelScale<1?Math.max(1,Math.floor(height*pixelScale)):height
+  const finalWidth=round32(pixelScale<1?Math.max(1,Math.floor(width*pixelScale)):width)
+  const finalHeight=round32(pixelScale<1?Math.max(1,Math.floor(height*pixelScale)):height)
   const needsResize=finalWidth!==sourceWidth||finalHeight!==sourceHeight||!/^data:image\/png/i.test(header)
   const output=needsResize
     ? await sharp(source).resize(finalWidth,finalHeight,{fit:'fill'}).png().toBuffer()
@@ -93,6 +97,8 @@ export async function prepareImageForInteriorEdit(value:string):Promise<Prepared
     dataUrl:`data:image/png;base64,${output.toString('base64')}`,
     width:finalWidth,
     height:finalHeight,
+    originalWidth:sourceWidth,
+    originalHeight:sourceHeight,
     size:`${finalWidth}*${finalHeight}`,
   }
 }

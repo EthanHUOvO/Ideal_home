@@ -2276,7 +2276,7 @@ const [modelExperience, setModelExperience] = useState<ModelExperience>("intro")
     const localFallback = () => buildResidentialBudget(design, effectiveSettings);
     let timeout: number | null = null;
     try {
-      timeout = window.setTimeout(() => controller.abort(), 12000);
+      timeout = window.setTimeout(() => controller.abort(), 180000);
       const res = await fetch("/api/bom/generate", {
         method: "POST",
         headers: { "content-type": "application/json" },
